@@ -51,7 +51,7 @@ void MatrixPrint(float *M, int n, int p, int c) {
         printf("Channel %d:\n", chan);
         for (int i = 0; i < n; i++) {
             for (int j = 0; j < p; j++) {
-                printf("%6.2f ", M[chan * n * p + i * p + j]); 
+                printf("%0.4f ", M[chan * n * p + i * p + j]); 
             }
             printf("\n"); 
         }
@@ -59,6 +59,9 @@ void MatrixPrint(float *M, int n, int p, int c) {
     }
 }
 
+__device__ float activation_tanh(float f) {
+    return tanh(f);
+}
 
 __global__ void conv2d(float* input, float* kernels, float* output, int input_size, int kernel_size, int output_size, int num_kernels) {
     int kernel_idx = blockIdx.z;
@@ -76,9 +79,11 @@ __global__ void conv2d(float* input, float* kernels, float* output, int input_si
             }
         }
 
-        output[kernel_idx * output_size * output_size + row * output_size + col] = sum;
+        output[kernel_idx * output_size * output_size + row * output_size + col] = activation_tanh(sum);
     }
 }
+
+
 
 __global__ void avg_pooling(const float* input, float* output, int input_size, int output_size, int pool_size, int num_channels) {
     int kernel_idx = blockIdx.z; // Index du canal
@@ -107,63 +112,72 @@ __global__ void avg_pooling(const float* input, float* output, int input_size, i
 
 
 
-int main(void) {
-    int size_data = INPUT_SIZE_DATA*INPUT_SIZE_DATA*sizeof(float);                              //Size of raw_data
-    int size_C1_data = INPUT_SIZE_C1_DATA*INPUT_SIZE_C1_DATA*INPUT_CHANNEL*sizeof(float);       //Size of C1
-    int size_S1_data = INPUT_SIZE_S1*INPUT_SIZE_S1*INPUT_CHANNEL*sizeof(float);                 //Size of S1
-    int size_C1_kern = INPUT_SIZE_C1_KERNEL*INPUT_SIZE_C1_KERNEL*INPUT_CHANNEL*sizeof(float);   //Size of C1 kernel
 
-    float* raw_data = (float *)malloc(size_data);                                               //Creation of raw_data
-    float* C1_data = (float *)malloc(size_C1_data);                                             //Creation of C1
-    float* S1_data = (float *)malloc(size_S1_data);                                             //Creation of S1
-    float* C1_kernel = (float *)malloc(size_C1_kern);                                           //Creation of C1 kernel
+int main() {
+   srand(time(NULL));
 
-    MatrixInit(raw_data, INPUT_SIZE_DATA, INPUT_SIZE_DATA, 1, false);
-    MatrixInit(C1_kernel, INPUT_SIZE_C1_KERNEL, INPUT_SIZE_C1_KERNEL, INPUT_CHANNEL, false);
+   // Allocation de la mémoire pour les matrices CPU
+   float* raw_data = (float*)malloc(INPUT_SIZE_DATA * INPUT_SIZE_DATA * sizeof(float));
+   float* C1_data = (float*)malloc(INPUT_CHANNEL * INPUT_SIZE_C1_DATA * INPUT_SIZE_C1_DATA * sizeof(float));
+   float* S1_data = (float*)malloc(INPUT_CHANNEL * INPUT_SIZE_S1 * INPUT_SIZE_S1 * sizeof(float));
+   float* C1_kernel = (float*)malloc(INPUT_CHANNEL * INPUT_SIZE_C1_KERNEL * INPUT_SIZE_C1_KERNEL * sizeof(float));
 
-    MatrixPrint(raw_data, INPUT_SIZE_DATA, INPUT_SIZE_DATA, 1);
-    MatrixPrint(C1_kernel, INPUT_SIZE_C1_KERNEL, INPUT_SIZE_C1_KERNEL, INPUT_CHANNEL);
+   // Initialisation des matrices
+   MatrixInit(raw_data, INPUT_SIZE_DATA, INPUT_SIZE_DATA, 1, false);  // Valeurs aléatoires entre 0 et 1 pour raw_data
+   MatrixInit(C1_data, INPUT_SIZE_C1_DATA, INPUT_SIZE_C1_DATA, INPUT_CHANNEL, true);  // Initialisation à zéro pour C1_data
+   MatrixInit(S1_data, INPUT_SIZE_S1, INPUT_SIZE_S1, INPUT_CHANNEL, true);  // Initialisation à zéro pour S1_data
+   MatrixInit(C1_kernel, INPUT_SIZE_C1_KERNEL, INPUT_SIZE_C1_KERNEL, INPUT_CHANNEL, false);  // Valeurs aléatoires pour C1_kernel
 
-    float *d_input, *d_kernels, *d_output, *d_S1;
-    cudaMalloc(&d_input, size_data);
-    cudaMalloc(&d_kernels, size_C1_kern);
-    cudaMalloc(&d_output, size_C1_data);
-    cudaMalloc(&d_S1, size_S1_data);
+   // Pointeurs GPU
+   float *d_raw_data, *d_C1_data, *d_S1_data, *d_C1_kernel;
 
-    cudaMemcpy(d_input, raw_data, size_data, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_kernels, C1_kernel, size_C1_kern, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_output, C1_data, size_C1_data, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_S1, S1_data, size_S1_data, cudaMemcpyHostToDevice);
+   // Allocation mémoire sur le GPU
+   cudaMalloc((void**)&d_raw_data, INPUT_SIZE_DATA * INPUT_SIZE_DATA * sizeof(float));
+   cudaMalloc((void**)&d_C1_data, INPUT_CHANNEL * INPUT_SIZE_C1_DATA * INPUT_SIZE_C1_DATA * sizeof(float));
+   cudaMalloc((void**)&d_S1_data, INPUT_CHANNEL * INPUT_SIZE_S1 * INPUT_SIZE_S1 * sizeof(float));
+   cudaMalloc((void**)&d_C1_kernel, INPUT_CHANNEL * INPUT_SIZE_C1_KERNEL * INPUT_SIZE_C1_KERNEL * sizeof(float));
 
-    dim3 threadsPerBlock(16, 16);
-    dim3 numBlocks((INPUT_SIZE_C1_DATA + threadsPerBlock.x - 1) / threadsPerBlock.x,
-                (INPUT_SIZE_C1_DATA + threadsPerBlock.y - 1) / threadsPerBlock.y,
-                INPUT_CHANNEL);
-    dim3 numBlocksPooling((INPUT_SIZE_S1 + threadsPerBlock.x - 1) / threadsPerBlock.x,
-                          (INPUT_SIZE_S1 + threadsPerBlock.y - 1) / threadsPerBlock.y,
-                          INPUT_CHANNEL);
+   // Copie des données vers le GPU
+   cudaMemcpy(d_raw_data, raw_data, INPUT_SIZE_DATA * INPUT_SIZE_DATA * sizeof(float), cudaMemcpyHostToDevice);
+   cudaMemcpy(d_C1_kernel, C1_kernel, INPUT_CHANNEL * INPUT_SIZE_C1_KERNEL * INPUT_SIZE_C1_KERNEL * sizeof(float), cudaMemcpyHostToDevice);
 
-    conv2d<<<numBlocks, threadsPerBlock>>>(d_input, d_kernels, d_output, INPUT_SIZE_DATA, INPUT_SIZE_C1_KERNEL, INPUT_SIZE_C1_DATA, INPUT_CHANNEL);
-    cudaDeviceSynchronize();
+   // Définition des dimensions des blocs et des grilles
+   dim3 blockDim(16, 16);
+   dim3 gridDim((INPUT_SIZE_C1_DATA + blockDim.x - 1) / blockDim.x, (INPUT_SIZE_C1_DATA + blockDim.y - 1) / blockDim.y, INPUT_CHANNEL);
 
-    avg_pooling<<<numBlocksPooling, threadsPerBlock>>>(d_output, d_S1, size_C1_data, size_S1_data, POOL_SIZE, INPUT_CHANNEL);
-    cudaDeviceSynchronize();
+   // Lancer la convolution avec activation
+   conv2d<<<gridDim, blockDim>>>(d_raw_data, d_C1_kernel, d_C1_data, INPUT_SIZE_DATA, INPUT_SIZE_C1_KERNEL, INPUT_SIZE_C1_DATA, INPUT_CHANNEL);
+   cudaGetLastError(), "cudaConvolution2DWithActivation";
 
-    float* h_C1 = (float *)malloc(size_C1_data);                                             //Creation of C1
-    float* h_S1 = (float *)malloc(size_S1_data);                                             //Creation of S1
-    cudaMemcpy(h_C1, d_output, size_C1_data, cudaMemcpyDeviceToHost);
-    cudaMemcpy(h_S1, d_S1, size_S1_data, cudaMemcpyDeviceToHost);
+   // Copier les résultats de la convolution
+   cudaMemcpy(C1_data, d_C1_data, INPUT_CHANNEL * INPUT_SIZE_C1_DATA * INPUT_SIZE_C1_DATA * sizeof(float), cudaMemcpyDeviceToHost);
 
-    MatrixPrint(h_C1, INPUT_SIZE_C1_DATA, INPUT_SIZE_C1_DATA, INPUT_SIZE_C1_KERNEL);
-    MatrixPrint(h_S1, INPUT_SIZE_S1, INPUT_SIZE_S1, INPUT_SIZE_C1_KERNEL);
+   // Affichage des résultats après convolution et activation
+   printf("\nRésultat de la convolution avec activation tanh (C1_data) :\n");
+   MatrixPrint(C1_data, INPUT_SIZE_C1_DATA, INPUT_SIZE_C1_DATA, INPUT_CHANNEL);
 
-    cudaFree(d_S1);
-    cudaFree(d_input);
-    cudaFree(d_kernels);
-    cudaFree(d_output);
+   // Lancer le pooling (average pooling)
+   dim3 poolGridDim((INPUT_SIZE_S1 + blockDim.x - 1) / blockDim.x, (INPUT_SIZE_S1 + blockDim.y - 1) / blockDim.y, INPUT_CHANNEL);
+   avg_pooling<<<poolGridDim, blockDim>>>(d_C1_data, d_S1_data, INPUT_SIZE_C1_DATA, INPUT_SIZE_S1, POOL_SIZE, INPUT_CHANNEL);
+   cudaGetLastError(), "cudaAveragePooling";
 
-    free(raw_data);
-    free(C1_data);
-    free(S1_data);
-    free(C1_kernel);
+   // Copier les résultats du pooling
+   cudaMemcpy(S1_data, d_S1_data, INPUT_CHANNEL * INPUT_SIZE_S1 * INPUT_SIZE_S1 * sizeof(float), cudaMemcpyDeviceToHost);
+
+   // Affichage des résultats après pooling
+   printf("\nRésultat après pooling (S1_data) :\n");
+   MatrixPrint(S1_data, INPUT_SIZE_S1, INPUT_SIZE_S1, INPUT_CHANNEL);
+
+   // Libération de la mémoire
+   cudaFree(d_raw_data);
+   cudaFree(d_C1_data);
+   cudaFree(d_S1_data);
+   cudaFree(d_C1_kernel);
+
+   free(raw_data);
+   free(C1_data);
+   free(S1_data);
+   free(C1_kernel);
+
+   return 0;
 }
