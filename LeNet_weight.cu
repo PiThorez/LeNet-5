@@ -63,6 +63,29 @@ __device__ float activation_tanh(float f) {
     return tanh(f);
 }
 
+__device__ void activation_softmax(float* input, float* output, int size) {
+    float max_val = input[0];
+    float sum = 0.0f;
+
+    // Trouver le maximum pour stabilité numérique
+    for (int i = 1; i < size; i++) {
+        if (input[i] > max_val) {
+            max_val = input[i];
+        }
+    }
+
+    // Calcul de l'exponentielle et somme
+    for (int i = 0; i < size; i++) {
+        output[i] = exp(input[i] - max_val); // Soustraction du max pour stabilité
+        sum += output[i];
+    }
+
+    // Normalisation
+    for (int i = 0; i < size; i++) {
+        output[i] /= sum;
+    }
+}
+
 __global__ void conv2d(float* input, float* kernels, float* output, int input_size, int kernel_size, int output_size, int num_kernels) {
     int kernel_idx = blockIdx.z;
     int row = blockIdx.y * blockDim.y + threadIdx.y;
@@ -148,7 +171,7 @@ int main() {
     cudaMemcpy(d_C1_kernel, C1_kernel, INPUT_CHANNEL * INPUT_SIZE_C1_KERNEL * INPUT_SIZE_C1_KERNEL * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(d_C3_kernel, C3_kernel, 16 * INPUT_CHANNEL * INPUT_SIZE_C1_KERNEL * INPUT_SIZE_C1_KERNEL * sizeof(float), cudaMemcpyHostToDevice);
 
-    // C1: Convolution + tanh
+    // C1: Convolution
     dim3 blockDim(16, 16);
     dim3 gridDim((INPUT_SIZE_C1_DATA + blockDim.x - 1) / blockDim.x, (INPUT_SIZE_C1_DATA + blockDim.y - 1) / blockDim.y, INPUT_CHANNEL);
     conv2d<<<gridDim, blockDim>>>(d_raw_data, d_C1_kernel, d_C1_data, INPUT_SIZE_DATA, INPUT_SIZE_C1_KERNEL, INPUT_SIZE_C1_DATA, INPUT_CHANNEL);
@@ -174,6 +197,7 @@ int main() {
     cudaMemcpy(S4_data, d_S4_data, 16 * (INPUT_SIZE_S1 / 2 - 2 + 1) * (INPUT_SIZE_S1 / 2 - 2 + 1) * sizeof(float), cudaMemcpyDeviceToHost);
     printf("\nRésultat après pooling moyen (S4) :\n");
     MatrixPrint(S4_data, INPUT_SIZE_S1 / 2 - 2 + 1, INPUT_SIZE_S1 / 2 - 2 + 1, 16);
+
 
     // Libération de la mémoire
     cudaFree(d_raw_data);
